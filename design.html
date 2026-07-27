@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASR Pipeline 设计文档</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: 'Segoe UI', -apple-system, sans-serif;
+  line-height: 1.7;
+  padding: 40px 20px;
+  display: flex;
+  justify-content: center;
+}
+.container { max-width: 1000px; width: 100%; }
+
+h1 {
+  font-size: 28px;
+  font-weight: 700;
+  color: #f0f6fc;
+  margin-bottom: 4px;
+}
+h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #58a6ff;
+  margin-top: 44px;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #21262d;
+}
+h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #c9d1d9;
+  margin-top: 28px;
+  margin-bottom: 10px;
+}
+.subtitle {
+  color: #8b949e;
+  font-size: 14px;
+  margin-bottom: 32px;
+}
+
+/* ── Cards ── */
+.card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  padding: 18px;
+}
+.card h4 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f0f6fc;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card p, .card li {
+  font-size: 13px;
+  color: #8b949e;
+  line-height: 1.6;
+}
+.card ul { padding-left: 18px; }
+.card li { margin-bottom: 3px; }
+.card-green { border-color: #3fb95044; }
+.card-blue { border-color: #58a6ff44; }
+.card-orange { border-color: #d2992244; }
+.card-purple { border-color: #bc8cff44; }
+.card-red { border-color: #f8514944; }
+
+/* ── Tables ── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 24px;
+}
+th {
+  text-align: left;
+  padding: 10px 14px;
+  background: #161b22;
+  color: #8b949e;
+  font-weight: 600;
+  border-bottom: 2px solid #21262d;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #21262d;
+  color: #8b949e;
+}
+td:first-child {
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 12px;
+  color: #c9d1d9;
+}
+td code {
+  font-size: 11px;
+}
+
+/* ── Code ── */
+pre {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 14px 16px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  margin-bottom: 18px;
+  color: #c9d1d9;
+}
+code { font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 12px; }
+p code, li code {
+  background: #161b22;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #30363d;
+}
+
+/* ── Steps (phase list) ── */
+.steps { counter-reset: step; }
+.step {
+  counter-increment: step;
+  background: #161b22;
+  border-left: 3px solid #58a6ff;
+  border-radius: 0 8px 8px 0;
+  padding: 14px 18px;
+  margin-bottom: 12px;
+  padding-left: 50px;
+  position: relative;
+}
+.step::before {
+  content: counter(step);
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  width: 26px;
+  height: 26px;
+  background: #1f3a5f;
+  color: #58a6ff;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+.step .name { font-weight: 600; color: #f0f6fc; font-size: 15px; }
+.step .desc { font-size: 13px; color: #8b949e; margin-top: 4px; }
+
+/* ── State machine ── */
+.state-machine {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.state-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.state-row:last-child { margin-bottom: 0; }
+.state-box {
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.state-pending { background: #1f3a5f; color: #a5d8ff; border: 1px solid #58a6ff; }
+.state-uploading { background: #3a2a1b; color: #ffd8a8; border: 1px solid #d29922; }
+.state-uploaded { background: #2a3a1b; color: #b0e57c; border: 1px solid #7ec850; }
+.state-processing { background: #1b3a4a; color: #7ec8e3; border: 1px solid #58a6ff; }
+.state-done { background: #1b3a1b; color: #7ee787; border: 1px solid #3fb950; }
+.state-failed { background: #3a1b1b; color: #ff7b72; border: 1px solid #f85149; }
+.arrow-right { color: #484f58; font-size: 14px; }
+
+/* ── Architecture flow ── */
+.arch-box {
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+  position: relative;
+}
+.arch-box .title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.arch-box .file {
+  font-family: 'SF Mono', monospace;
+  font-size: 13px;
+  padding: 3px 8px;
+  background: #0d1117;
+  border-radius: 4px;
+  display: inline-block;
+  margin-bottom: 4px;
+}
+.arch-box .desc {
+  font-size: 12px;
+  color: #8b949e;
+  line-height: 1.5;
+}
+.arch-local { border-color: #58a6ff; }
+.arch-local .title { color: #58a6ff; }
+.arch-gpu { border-color: #3fb950; }
+.arch-gpu .title { color: #3fb950; }
+.arch-data { border-color: #d29922; }
+.arch-data .title { color: #d29922; }
+.arch-data { border-color: #d29922; }
+
+/* ── Flow diagram ── */
+.flow-wrapper {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 24px;
+  margin-bottom: 24px;
+  overflow-x: auto;
+}
+.flow-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  white-space: nowrap;
+  margin-bottom: 6px;
+}
+.flow-box {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  min-width: 80px;
+}
+.flow-box-local { background: #1f3a5f; color: #58a6ff; border: 1px solid #58a6ff; }
+.flow-box-gpu { background: #1b3a1b; color: #3fb950; border: 1px solid #3fb950; }
+.flow-box-action { background: #3a2a1b; color: #d29922; border: 1px solid #d29922; }
+.flow-label {
+  font-size: 10px;
+  color: #484f58;
+  margin: 0 6px;
+  min-width: 40px;
+  text-align: center;
+}
+
+/* ── Badges ── */
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-blue { background: #1f3a5f; color: #58a6ff; }
+.badge-green { background: #1b3a1b; color: #3fb950; }
+.badge-orange { background: #3a2a1b; color: #d29922; }
+.badge-red { background: #3a1b1b; color: #f85149; }
+.badge-purple { background: #2a1b3a; color: #bc8cff; }
+
+/* ── Info ── */
+.info {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  font-size: 13px;
+  color: #8b949e;
+}
+.info strong { color: #f0f6fc; }
+.info-green { border-left: 3px solid #3fb950; }
+.info-orange { border-left: 3px solid #d29922; }
+
+/* ── JSON viewer ── */
+.json-sample {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 14px 16px;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  margin-bottom: 18px;
+  color: #c9d1d9;
+}
+.json-sample .key { color: #79c0ff; }
+.json-sample .str { color: #a5d6ff; }
+.json-sample .num { color: #79c0ff; }
+.json-sample .null { color: #d2a8ff; }
+
+/* ── Stats grid ── */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.stat-box {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 14px;
+  text-align: center;
+}
+.stat-box .num {
+  font-size: 28px;
+  font-weight: 700;
+  color: #f0f6fc;
+}
+.stat-box .label {
+  font-size: 11px;
+  color: #8b949e;
+  margin-top: 2px;
+}
+
+/* ── Comparison table ── */
+.comp th { font-size: 11px; }
+.comp td { font-size: 12px; padding: 8px 14px; }
+.comp td.old { color: #f85149; }
+.comp td.new { color: #7ee787; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>ASR Pipeline 设计文档</h1>
+<div class="subtitle">Whisper large-v3 + pyannote speaker diarization · 单机编排 · 断网容灾</div>
+
+<!-- ═══════════════ 概览 ═══════════════ -->
+<h2>概览</h2>
+
+<p style="color:#8b949e; margin-bottom:16px;">
+一个运行在本地 macOS 上的 Python 编排器，通过 SSH/SCP 控制 GPU 服务器完成音频转写+说话人分离全流程。
+所有状态在本地维护，GPU 服务器只是计算资源；服务器随时停机不影响已处理数据，恢复后自动继续。
+</p>
+
+<div class="stats-row">
+  <div class="stat-box">
+    <div class="num">2,459</div>
+    <div class="label">视频 ID 总数</div>
+  </div>
+  <div class="stat-box">
+    <div class="num">1,354</div>
+    <div class="label">可用音频 (m4a)</div>
+  </div>
+  <div class="stat-box">
+    <div class="num">1,015</div>
+    <div class="label">已完成转写</div>
+  </div>
+  <div class="stat-box">
+    <div class="num">339</div>
+    <div class="label">待处理</div>
+  </div>
+  <div class="stat-box">
+    <div class="num">~40s</div>
+    <div class="label">均耗时/文件</div>
+  </div>
+</div>
+
+<!-- ═══════════════ 数据源 ═══════════════ -->
+<h2>数据源与目录结构</h2>
+
+<div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-bottom:24px;">
+  <div class="arch-box arch-data">
+    <div class="title">📋 视频清单</div>
+    <div class="file">data/video_list.jsonl</div>
+    <div class="desc">来源文件的唯一入口，每行一个 JSON：<br>
+    <code>{id, title, duration, speaker, channel}</code></div>
+  </div>
+  <div class="arch-box arch-data">
+    <div class="title">🎵 原始音频</div>
+    <div class="file">data/audio_raw/</div>
+    <div class="desc"><code>{video_id}.m4a</code> 格式，<br>YouTube 下载的原始文件</div>
+  </div>
+  <div class="arch-box arch-data">
+    <div class="title">🤖 AssemblyAI (旧)</div>
+    <div class="file">data/audio_diarized_assemblyai/</div>
+    <div class="desc">按 <code>{speaker}/{id}.txt</code> 组织，<br>已处理的不再重复</div>
+  </div>
+</div>
+
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:24px;">
+  <div class="arch-box arch-data" style="border-color:#3fb950;">
+    <div class="title" style="color:#3fb950;">✅ 本地输出</div>
+    <div class="file">data/audio_diarized_local/</div>
+    <div class="desc"><code>{id}.json</code> + <code>{id}.txt</code><br>
+    本管线的最终产物</div>
+  </div>
+  <div class="arch-box arch-data" style="border-color:#58a6ff;">
+    <div class="title" style="color:#58a6ff;">📊 状态清单</div>
+    <div class="file">data/audio_diarized_local/manifest.jsonl</div>
+    <div class="desc">每文件一条状态记录：<br>
+    <code>{id, state, speaker, retries, updated}</code></div>
+  </div>
+</div>
+
+<!-- ═══════════════ 架构图 ═══════════════ -->
+<h2>架构图</h2>
+
+<div class="flow-wrapper">
+  <!-- Phase: Upload -->
+  <div class="flow-row">
+    <div class="flow-box flow-box-local">data/audio_raw/<br>{id}.m4a</div>
+    <div class="flow-label">scp</div>
+    <div class="flow-box flow-box-gpu">/root/input/<br>{id}.m4a</div>
+  </div>
+  <!-- Phase: Convert -->
+  <div class="flow-row" style="margin-top:4px;">
+    <div class="flow-box flow-box-local" style="visibility:hidden;">─</div>
+    <div class="flow-label">ffmpeg</div>
+    <div class="flow-box flow-box-action">16kHz mono</div>
+    <div class="flow-label">→</div>
+    <div class="flow-box flow-box-gpu">/root/autodl-tmp/<br>{id}.wav</div>
+  </div>
+  <!-- Phase: Transcribe -->
+  <div class="flow-row" style="margin-top:4px;">
+    <div class="flow-box flow-box-local" style="visibility:hidden;">─</div>
+    <div class="flow-box flow-box-gpu" style="visibility:hidden;">─</div>
+    <div class="flow-label">whisper</div>
+    <div class="flow-box flow-box-action">large-v3</div>
+    <div class="flow-label">+</div>
+    <div class="flow-box flow-box-action">pyannote<br>3.1</div>
+    <div class="flow-label">→</div>
+    <div class="flow-box flow-box-gpu">/root/output_large-v3/<br>{id}.json+.txt</div>
+  </div>
+  <!-- Phase: Download -->
+  <div class="flow-row" style="margin-top:4px;">
+    <div class="flow-box flow-box-local">data/audio_diarized_local/<br>{id}.json+.txt</div>
+    <div class="flow-label">scp</div>
+    <div class="flow-box flow-box-gpu">/root/output_large-v3/<br>{id}.json+.txt</div>
+  </div>
+</div>
+
+<!-- ═══════════════ 脚本 ═══════════════ -->
+<h2>核心脚本</h2>
+
+<div class="card-grid">
+  <div class="card card-blue">
+    <h4>💻 pipeline_manager.py</h4>
+    <p><span class="badge badge-blue">Local</span> 主编排器，单进程管理全生命周期</p>
+    <ul>
+      <li>维护 manifest.jsonl 状态清单</li>
+      <li>Upload → Process → Download → Cleanup 循环</li>
+      <li>GPU 不可达时自动跳过，不影响已处理数据</li>
+      <li>支持 <code>--loop</code>、<code>--status</code>、<code>--init-manifest</code></li>
+    </ul>
+  </div>
+  <div class="card card-green">
+    <h4>⚙️ gpu_worker.py</h4>
+    <p><span class="badge badge-green">GPU</span> 由 pipeline_manager 部署并触发</p>
+    <ul>
+      <li>ffmpeg m4a→wav 转换（16kHz mono）</li>
+      <li>Whisper large-v3 转写（faster-whisper batched）</li>
+      <li>pyannote speaker-diarization-3.1</li>
+      <li>模型一次性加载，批内复用</li>
+      <li>长音频(>30min)自动切块，短音频(<10s)跳过分离</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ═══════════════ 状态机 ═══════════════ -->
+<h2>状态机</h2>
+
+<div class="state-machine">
+  <div class="state-row">
+    <span class="state-box state-pending">pending</span>
+    <span class="arrow-right">→</span>
+    <span style="color:#8b949e;">等待上传到 GPU</span>
+  </div>
+  <div class="state-row">
+    <span class="state-box state-uploading">uploading</span>
+    <span class="arrow-right">→</span>
+    <span style="color:#8b949e;">正在 scp 传输</span>
+  </div>
+  <div class="state-row">
+    <span class="state-box state-uploaded">uploaded</span>
+    <span class="arrow-right">→</span>
+    <span style="color:#8b949e;">.m4a 已到达 GPU /root/input/</span>
+  </div>
+  <div class="state-row">
+    <span class="state-box state-processing">processing</span>
+    <span class="arrow-right">→</span>
+    <span style="color:#8b949e;">GPU Worker 正在处理（转换+转写+分离）</span>
+  </div>
+  <div class="state-row">
+    <span class="state-box state-done">done</span>
+    <span class="arrow-right">→</span>
+    <span style="color:#8b949e;">结果已下载到 audio_diarized_local/</span>
+  </div>
+  <div class="state-row">
+    <span class="state-box state-failed">failed</span>
+    <span class="arrow-right" style="color:#f85149;">→</span>
+    <span class="state-box state-pending">pending</span>
+    <span style="color:#8b949e;">自动重试（最多 max_retries 次）</span>
+  </div>
+</div>
+
+<div class="info">
+<strong>恢复机制：</strong>启动时 <code>phase_recover()</code> 自动纠正瞬态状态：<br>
+<code>uploading</code> → 检查 GPU 上 .m4a 是否存在 → 回退 pending 或推进 uploaded<br>
+<code>processing</code> → 检查 GPU 输出是否存在 → 重新入队 uploaded<br>
+<code>failed</code> → 未超重试次数则重置为 uploaded
+</div>
+
+<!-- ═══════════════ 编排器循环 ═══════════════ -->
+<h2>编排器主循环</h2>
+
+<div class="steps">
+  <div class="step">
+    <div class="name">Phase Recover</div>
+    <div class="desc">纠正因上次运行中断导致的瞬态状态。检查 GPU 上文件真实存在性，恢复 manifest 一致性。</div>
+  </div>
+  <div class="step">
+    <div class="name">Phase Upload</div>
+    <div class="desc">检查 GPU 磁盘空间（<span class="badge badge-orange">≥2GB free</span>），选 pending 文件 scp 到 <code>/root/input/</code>，标记 uploaded。批次大小可调（默认 10GB）。</div>
+  </div>
+  <div class="step">
+    <div class="name">Phase Process</div>
+    <div class="desc">SCP <code>gpu_worker.py</code> 到 GPU，SSH 启动 nohup 后台进程处理一批 uploaded 文件。批次大小可调（默认 5 文件）。</div>
+  </div>
+  <div class="step">
+    <div class="name">Phase Download</div>
+    <div class="desc">检查 GPU output 目录中的 .json 文件，将新完成的 scp 回 <code>audio_diarized_local/</code>，标记 done。失败的标记 failed 并下载 .error。</div>
+  </div>
+  <div class="step">
+    <div class="name">Phase Cleanup</div>
+    <div class="desc">删除 GPU 上已 done 文件的 .wav 和 .m4a，释放磁盘空间。</div>
+  </div>
+  <div class="step">
+    <div class="name">Phase Report</div>
+    <div class="desc">打印状态汇总：GPU 在线状态、磁盘用量、各状态文件数、完成百分比。</div>
+  </div>
+</div>
+
+<!-- ═══════════════ 容灾机制 ═══════════════ -->
+<h2>容灾机制</h2>
+
+<div class="card-grid">
+  <div class="card card-green">
+    <h4>🟢 GPU 离线</h4>
+    <p>SSH 连接失败 → 跳过所有 GPU 操作阶段。已下载到本地的数据完全不受影响。下一轮循环自动重试。</p>
+  </div>
+  <div class="card card-orange">
+    <h4>🟡 GPU 磁盘满</h4>
+    <p>Upload 前检查 free space <span class="badge badge-orange">≥2GB</span>，不足则暂停上传，优先 Cleanup 释放空间。</p>
+  </div>
+  <div class="card card-orange">
+    <h4>🟡 传输中断</h4>
+    <p>scp 异常 → 文件标记 failed → 自动重试（默认 3 次）。manifest 仅记录成功到达的状态。</p>
+  </div>
+  <div class="card card-red">
+    <h4>🔴 Worker 崩溃</h4>
+    <p>GPU worker 意外退出 → mark 为 processing 的文件在下一轮 Recover 中重新入队 → 回退到 uploaded 重新处理。</p>
+  </div>
+  <div class="card card-red">
+    <h4>🔴 本地中断</h4>
+    <p>编排器被 Ctrl+C 或崩溃 → manifest.jsonl 已增量 flush，重启后 <code>phase_recover()</code> 从断点继续。</p>
+  </div>
+  <div class="card card-blue">
+    <h4>🔵 重复保护</h4>
+    <p>manifest 初始化时自动检查 <code>audio_diarized_local/</code> 和 <code>audio_diarized_assemblyai/</code>（所有 <code>{speaker}/{id}.txt</code>），已存在的直接标 done。</p>
+  </div>
+</div>
+
+<!-- ═══════════════ 跳过逻辑 ═══════════════ -->
+<h2>重复处理保护</h2>
+
+<p style="color:#8b949e; margin-bottom:14px;">
+初始化 manifest 或每次启动时，以下两种情况的文件自动标记为 <code>done</code>：
+</p>
+
+<table>
+<thead>
+<tr><th>来源</th><th>判断条件</th><th>示例</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>audio_diarized_local/</td>
+  <td><code>{id}.json</code> + <code>{id}.txt</code> 同时存在</td>
+  <td><code>abc123.json</code> + <code>abc123.txt</code></td>
+</tr>
+<tr>
+  <td>audio_diarized_assemblyai/</td>
+  <td>任意 <code>{speaker}/*.txt</code> 文件名匹配</td>
+  <td><code>barry_eichengreen/abc123.txt</code></td>
+</tr>
+</tbody>
+</table>
+
+<div class="info info-green">
+<strong>当前覆盖率：</strong>1,354 个可用文件中，1,015 已完成（本地 862 + AssemblyAI 287，去重后），339 待处理。
+</div>
+
+<!-- ═══════════════ 配置参数 ═══════════════ -->
+<h2>可调参数</h2>
+
+<table>
+<thead>
+<tr><th>参数</th><th>默认值</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr><td>--batch-upload-mb</td><td>10,000</td><td>每批上传最大 MB</td></tr>
+<tr><td>--batch-process</td><td>5</td><td>每批 GPU worker 处理文件数</td></tr>
+<tr><td>--batch-download</td><td>20</td><td>每轮检查下载数</td></tr>
+<tr><td>--poll-interval</td><td>60</td><td>循环间隔（秒）</td></tr>
+<tr><td>--max-retries</td><td>3</td><td>失败文件自动重试次数</td></tr>
+<tr><td style="color:#8b949e;">min_free_gb</td><td style="color:#8b949e;">2.0</td><td style="color:#8b949e;">GPU 磁盘保留下限（代码常量）</td></tr>
+</tbody>
+</table>
+
+<!-- ═══════════════ 输出格式 ═══════════════ -->
+<h2>输出格式</h2>
+
+<h3>JSON（结构化）</h3>
+<div class="json-sample">
+{<br>
+  <span class="key">"filename"</span>: <span class="str">"abc123"</span>,<br>
+  <span class="key">"language"</span>: <span class="str">"en"</span>,<br>
+  <span class="key">"duration"</span>: <span class="num">487.3</span>,<br>
+  <span class="key">"segments"</span>: [<br>
+  &nbsp;&nbsp;{ <span class="key">"start"</span>: <span class="num">0.12</span>, <span class="key">"end"</span>: <span class="num">3.45</span>, <span class="key">"speaker"</span>: <span class="str">"SPEAKER_00"</span>, <span class="key">"text"</span>: <span class="str">" Thank you for joining us."</span> },<br>
+  &nbsp;&nbsp;{ <span class="key">"start"</span>: <span class="num">3.89</span>, <span class="key">"end"</span>: <span class="num">7.20</span>, <span class="key">"speaker"</span>: <span class="str">"SPEAKER_01"</span>, <span class="key">"text"</span>: <span class="str">" It's a pleasure to be here."</span> }<br>
+  &nbsp;&nbsp;...<br>
+  ]<br>
+}
+</div>
+
+<h3>TXT（可读）</h3>
+<pre>[SPEAKER_00]
+ Thank you for joining us.
+
+[SPEAKER_01]
+ It's a pleasure to be here.
+</pre>
+
+<!-- ═══════════════ GPU 环境 ═══════════════ -->
+<h2>GPU 运行环境</h2>
+
+<table>
+<thead>
+<tr><th>项目</th><th>详情</th></tr>
+</thead>
+<tbody>
+<tr><td>GPU</td><td>NVIDIA GeForce RTX 4090D (24GB VRAM)</td></tr>
+<tr><td>OS</td><td>Linux (overlay filesystem, 30G root + 7T /autodl-pub)</td></tr>
+<tr><td>Python</td><td>3.8.10 (miniconda3)</td></tr>
+<tr><td>PyTorch</td><td>2.0.0+cu118</td></tr>
+<tr><td>CUDA</td><td>11.8</td></tr>
+<tr><td>faster-whisper</td><td>CTranslate2 backend, large-v3 模型已缓存</td></tr>
+<tr><td>pyannote</td><td>speaker-diarization-3.1，模型已缓存</td></tr>
+</tbody>
+</table>
+
+<!-- ═══════════════ 对比旧设计 ═══════════════ -->
+<h2>对比旧设计</h2>
+
+<table class="comp">
+<thead>
+<tr><th>维度</th><th style="color:#f85149;">旧设计</th><th style="color:#7ee787;">新设计</th></tr>
+</thead>
+<tbody>
+<tr><td>进程数</td><td class="old">4 个独立守护进程+1 个 cron</td><td class="new">1 个编排器 + 1 个按需部署的 worker</td></tr>
+<tr><td>状态追踪</td><td class="old">无——靠文件存在与否推断</td><td class="new">manifest.jsonl 精确记录每文件状态</td></tr>
+<tr><td>数据入口</td><td class="old">audio_candidates_to_diarize.txt（纯 ID 列表）</td><td class="new">video_list.jsonl（含 title, speaker, channel）</td></tr>
+<tr><td>重复保护</td><td class="old">仅检查自己的 output 目录</td><td class="new">同时检查 local + AssemblyAI 两个来源</td></tr>
+<tr><td>断点续传</td><td class="old">仅文件级（检查 json 存在）</td><td class="new">文件+阶段级，瞬态状态自动恢复</td></tr>
+<tr><td>错误恢复</td><td class="old">.error 文件写了没人管</td><td class="new">自动重试 3 次 + 回退机制</td></tr>
+<tr><td>磁盘协调</td><td class="old">多进程独立查 df，无保护</td><td class="new">单线程按序检查，按阈值暂停</td></tr>
+<tr><td>可观测性</td><td class="old">分别 tail 多个日志文件</td><td class="new">统一状态报告 + -–status 一键查看</td></tr>
+<tr><td>容灾</td><td class="old">任何进程挂了静默停滞</td><td class="new">GPU 离线自动跳过，恢复后继续</td></tr>
+</tbody>
+</table>
+
+<!-- ═══════════════ 已知限制 ═══════════════ -->
+<h2>已知限制与注意事项</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h4>⚠ 非采访类内容</h4>
+    <p>纪录片、单人旁白、现场噪音等场景可能导致 pyannote 过分离（>10 speaker）或大量 UNKNOWN。</p>
+  </div>
+  <div class="card">
+    <h4>⚠ 短段碎片化</h4>
+    <p>VAD filter 将停顿处切分开，对话密集处 "Yeah" "Right" 形成大量短段，但通常不影响内容。</p>
+  </div>
+  <div class="card">
+    <h4>⚠ 长音频 OOM</h4>
+    <p>pyannote 在 >30min 音频上会 OOM（24GB VRAM），已内置 1800s 切块处理。</p>
+  </div>
+  <div class="card">
+    <h4>⚠ 网络限制</h4>
+    <p>GPU 服务器在国内，huggingface.co 被墙。设置 <code>HF_ENDPOINT=https://hf-mirror.com</code>。</p>
+  </div>
+  <div class="card">
+    <h4>💡 单线程瓶颈</h4>
+    <p>Upload/Download 为串行 scp，大文件多时较慢。可考虑并行传输优化。</p>
+  </div>
+  <div class="card">
+    <h4>💡 磁盘空间</h4>
+    <p>GPU 根分区仅 30GB，.wav 文件 ~80MB/个。Cleanup 及时性直接影响吞吐量。</p>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
