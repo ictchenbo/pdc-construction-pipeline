@@ -4,8 +4,8 @@ Pipeline: consolidate search results → download VTT subtitles → filter non-s
 
 Reads video_list.jsonl, downloads missing VTT subtitles via yt-dlp,
 marks unavailable/no_captions videos, enriches metadata to flag non-speaker
-content, selects IDs for audio download (balanced by speaker), then
-downloads audio in parallel.
+content, selects IDs for audio download (balanced by speaker, VTT optional),
+then downloads audio in parallel.
 
 Modes:
     python select_videos.py consolidate     # Step 0: Build JSONL from search results
@@ -37,9 +37,9 @@ Phase 2 — filter:
     "status": "filtered" + "filter_reason".
 
 Phase 3 — select:
-    From entries with a valid VTT, no audio, and no exclusion status,
-    select up to N IDs sampling evenly across speakers.
-    Output: "speaker video_id".
+    From entries with no audio and no exclusion status, select up to N IDs
+    sampling evenly across speakers. VTT subtitles are not required.
+    Output: JSONL with full entry data.
 
 Phase 4 — download-audio:
     Reads the list from Phase 3, downloads m4a audio via yt-dlp in
@@ -62,7 +62,7 @@ from pathlib import Path
 
 
 # ── Paths (adjust as needed) ──────────────────────────────────────────────────
-DATA_BASE = "/Users/chenbo/css_research/data-trump"
+DATA_BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
 
 VIDEO_LIST = f"{DATA_BASE}/video_list.jsonl"
 VTT_DIR = f"{DATA_BASE}/vtt_raw"
@@ -741,8 +741,10 @@ def filter_videos(args):
     print(f"Total entries: {len(entries)}")
     print(f"Existing VTT files: {len(existing_vtt)}")
 
-    # Candidates: have VTT, not already excluded
+    # Candidates: not already excluded (VTT optional — no-VTT entries
+    # are still filtered via description + title/channel identity scoring)
     candidates = []
+    candidates_no_vtt = []
     for e in entries:
         vid = e.get("id", "")
         s = e.get("status", "")
@@ -752,6 +754,11 @@ def filter_videos(args):
             continue
         if vid in existing_vtt:
             candidates.append(e)
+        else:
+            candidates_no_vtt.append(e)
+
+    # no-VTT candidates are also eligible for filtering
+    candidates.extend(candidates_no_vtt)
 
     if not candidates:
         print("No candidates to filter.")
@@ -888,7 +895,7 @@ def filter_videos(args):
     # Summary
     print(f"\n{'=' * 60}")
     print("Phase 2 Summary:")
-    print(f"  Checked:             {len(candidates)}")
+    print(f"  Checked:             {len(candidates)}  (with VTT: {len(candidates) - len(candidates_no_vtt)}, without VTT: {len(candidates_no_vtt)})")
     print(f"  Passed:              {passed}")
     print(f"  Flagged:             {flagged}")
     if identity_flagged:
@@ -923,23 +930,26 @@ def filter_videos(args):
 # ── Phase 3: Select video IDs for audio download ─────────────────────────────
 
 def select_for_audio(args):
-    """Select video IDs whose VTT exists but audio hasn't been downloaded yet."""
+    """Select video IDs for audio download, even without VTT subtitles.
+
+    From entries with no audio file and no exclusion status (unavailable /
+    filtered / etc.), select up to N IDs sampling evenly across speakers.
+    VTT is not required — audio can be downloaded independently.
+    Output: JSONL with full entry data."""
     print("=" * 60)
     print("Phase 2: Selecting video IDs for audio download")
     print("=" * 60)
 
     entries = load_entries(args.video_list)
-    existing_vtt = get_existing_vtt_ids(args.vtt_dir)
     existing_audio = get_existing_audio_ids(args.audio_dir)
 
     print(f"Total entries:               {len(entries)}")
-    print(f"Existing VTT files:          {len(existing_vtt)}")
     print(f"Existing audio files:        {len(existing_audio)}")
 
     # Group entries by speaker, filtering to eligible candidates
-    # Eligible: has VTT file AND no audio file AND not marked unavailable
+    # Eligible: no audio file AND not marked unavailable/filtered
+    # (VTT not required — audio can be downloaded without subtitles)
     per_speaker: dict[str, list[str]] = defaultdict(list)
-    excluded_no_vtt = 0
     excluded_has_audio = 0
     excluded_unavailable = 0
     excluded_no_captions = 0
@@ -964,10 +974,6 @@ def select_for_audio(args):
         if e.get("status") == "filtered":
             continue
 
-        if vid not in existing_vtt:
-            excluded_no_vtt += 1
-            continue
-
         if vid in existing_audio:
             excluded_has_audio += 1
             continue
@@ -975,7 +981,6 @@ def select_for_audio(args):
         per_speaker[speaker].append(vid)
 
     print(f"Available for selection:     {sum(len(v) for v in per_speaker.values())}")
-    print(f"  Excluded (no VTT):         {excluded_no_vtt}")
     print(f"  Excluded (has audio):      {excluded_has_audio}")
     print(f"  Excluded (unavailable):    {excluded_unavailable}")
     print(f"  Excluded (no captions):    {excluded_no_captions}")
@@ -984,48 +989,55 @@ def select_for_audio(args):
         print("No candidates available for audio download.")
         return []
 
+    # Build a lookup from video_id to entry
+    entries_by_id: dict[str, dict] = {}
+    for e in entries:
+        vid = e.get("id", "")
+        if vid:
+            entries_by_id[vid] = e
+
     # Sample evenly across speakers (or select all with --all)
     rng = __import__("random").Random(args.seed)
     speaker_list = sorted(per_speaker.keys())
-    candidates: list[tuple[str, str]] = []
+    selected_ids: list[str] = []
 
     if args.all:
         for sp in speaker_list:
             ids = per_speaker[sp]
-            candidates.extend((sp, vid) for vid in ids)
-        print(f"  --all mode: selecting all {len(candidates)} eligible videos")
+            selected_ids.extend(ids)
+        print(f"  --all mode: selecting all {len(selected_ids)} eligible videos")
     elif args.per_speaker > 0:
         for sp in speaker_list:
             ids = per_speaker[sp]
             rng.shuffle(ids)
-            candidates.extend((sp, vid) for vid in ids[:args.per_speaker])
+            selected_ids.extend(ids[:args.per_speaker])
     else:
         for sp in speaker_list:
             ids = per_speaker[sp]
             rng.shuffle(ids)
-            candidates.extend((sp, vid) for vid in ids)
+            selected_ids.extend(ids)
 
     # Shuffle interleaved results so order isn't grouped by speaker
-    rng.shuffle(candidates)
+    rng.shuffle(selected_ids)
 
-    selected = candidates
-    speaker_count = len(set(s for s, _ in selected))
+    selected_entries = [entries_by_id[vid] for vid in selected_ids if vid in entries_by_id]
+    speaker_count = len(set(e.get("speaker", "unknown") for e in selected_entries))
 
-    # Write output
+    # Write output as JSONL (like video_list.jsonl)
     output_path = args.output
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w") as f:
-        for sp, vid in selected:
-            f.write(f"{sp} {vid}\n")
+        for e in selected_entries:
+            f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
-    print(f"\nSelected {len(selected)} videos from {speaker_count} speakers:")
-    for sp, vid in selected[:15]:
-        print(f"  {sp:>25s}  {vid}")
-    if len(selected) > 15:
-        print(f"  ... and {len(selected) - 15} more")
+    print(f"\nSelected {len(selected_entries)} videos from {speaker_count} speakers:")
+    for e in selected_entries[:15]:
+        print(f"  {e.get('speaker', 'unknown'):>25s}  {e.get('id', '')}")
+    if len(selected_entries) > 15:
+        print(f"  ... and {len(selected_entries) - 15} more")
     print(f"\nSaved to {output_path}")
 
-    return selected
+    return selected_entries
 
 
 # ── Phase 3: Download audio for selected videos ──────────────────────────────
@@ -1042,19 +1054,19 @@ def download_audio(args):
         for e in load_entries(args.video_list):
             entries_map[e.get("id", "")] = e
 
-    # Read video IDs to download
+    # Read video IDs to download — JSONL format (like video_list.jsonl)
+    tasks: list[str] = []
     input_file = args.audio_input or args.output
     if not os.path.exists(input_file):
         print(f"ERROR: input file not found: {input_file}")
-        print("Run 'select' mode first to generate the list, or pass --audio-input")
+        print("Run 'select' mode first, or pass --audio-input <video_list.jsonl>")
         return
 
-    tasks: list[str] = []
-    with open(input_file) as f:
-        for line in f:
-            parts = line.strip().split()
-            if len(parts) >= 2:
-                tasks.append(parts[1])  # speaker video_id → video_id
+    for e in load_entries(input_file):
+        vid = e.get("id", "")
+        if vid:
+            tasks.append(vid)
+    print(f"Loaded {len(tasks)} video IDs from {input_file}")
 
     # Dedup
     tasks = list(set(tasks))
@@ -1153,6 +1165,7 @@ def main():
             "filter:       Check identity & description; flag non-speaker content. "
             "select:       Select video IDs for audio download (balanced by speaker). "
             "download-audio: Download audio for the selected IDs (parallel). "
+            "Use --audio-input to read from a JSONL video list directly."
             "full:         download-vtt + filter + select + download-audio."
         ),
     )
@@ -1178,10 +1191,10 @@ def main():
     parser.add_argument("--per-speaker", type=int, default=4, help="Max per speaker (default: 4; 0 = no limit)")
     parser.add_argument("--all", action="store_true", help="Select ALL eligible video IDs (ignores --per-speaker)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
-    parser.add_argument("--output", default="/tmp/download_audio.txt", help="Output file path (default: /tmp/download_audio.txt)")
+    parser.add_argument("--output", default=os.path.join(DATA_BASE, "download_audio.jsonl"), help="Output file path (default: $(DATA_BASE)/download_audio.jsonl)")
 
     # Phase 4 options
-    parser.add_argument("--audio-input", default="", help="Input file with selected video IDs (defaults to --output)")
+    parser.add_argument("--audio-input", default="", help="Input JSONL video list (defaults to --output from select)")
     parser.add_argument("--audio-workers", type=int, default=3, help="Parallel download workers (default: 3)")
     parser.add_argument("--audio-retries", type=int, default=10, help="yt-dlp retry count (default: 10)")
     parser.add_argument("--audio-timeout", type=int, default=7200, help="Timeout per audio download in seconds (default: 7200 = 2h)")

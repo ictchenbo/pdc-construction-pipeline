@@ -383,7 +383,7 @@ def main():
     )
     parser.add_argument(
         "--output-dir", "-o",
-        default="./search_results",
+        default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "search_results"),
         help="Output directory (default: ./search_results)",
     )
     parser.add_argument(
